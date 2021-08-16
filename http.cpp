@@ -632,7 +632,7 @@ private:
 		else
 		{
 			PostMessageW(_hwnd, e_disconnect, _id, 
-				_pFileWriter && _pFileWriter->IsCreated() && !_cbBytesNeed.QuadPart ? STATUS_SUCCESS : _status);
+				_pFileWriter->IsCreated() && !_cbBytesNeed.QuadPart ? STATUS_SUCCESS : _status);
 		}
 
 		StopSSL();
@@ -1112,6 +1112,9 @@ private:
 
 		_bittestandreset(&_dwFlags, _bNotRead);
 		_bittestandreset(&_dwFlags, _bHandshakeDone);
+		_bittestandreset(&_dwFlags, _bWriteActive);
+		_bittestandreset(&_dwFlags, _bConnected);
+		_bittestandreset(&_dwFlags, _bIoStart);
 
 		if (!_bittestandreset(&_dwFlags, _bRedirected))
 		{
