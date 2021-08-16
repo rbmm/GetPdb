@@ -13,6 +13,7 @@ BOOL IsValidPDBExist(POBJECT_ATTRIBUTES poa, PGUID Signature, ULONG Age);
 //#undef DbgPrint
 #define dbgp_0 /##/
 #define dbgp /##/
+#define dbgp_1 /##/
 #define DbgPrintEx /##/
 
 #define SaveTick(t) t = GetTickCount()
@@ -405,7 +406,7 @@ private:
 	virtual void LogError(ULONG opCode, ULONG dwError)
 	{
 		_status = RtlGetLastNtStatus();
-		dbgp("[%u]:%s<%p>(%.4s %x(%u) %S)\n", TickNow(_t), __FUNCTION__, this, &opCode, RtlGetLastNtStatus(), dwError, _FileName);
+		dbgp_1("[%u]:%s<%p>(%.4s %x(%u) %S)\n", TickNow(_t), __FUNCTION__, this, &opCode, RtlGetLastNtStatus(), dwError, _FileName);
 	}
 
 	virtual ULONG GetMinReadBufferSize()
@@ -621,7 +622,7 @@ private:
 
 	virtual void OnDisconnect()
 	{
-		dbgp("[%08x][%x][%u]:%s<%p>(f=%x %S)\n", GetCurrentThreadId(), getIOcount(), TickNow(_t), __FUNCTION__, this, _dwFlags, _FileName);
+		dbgp_1("[%08x][%u]:%s<%p>(f=%x %S)\n", GetCurrentThreadId(), TickNow(_t), __FUNCTION__, this, _dwFlags, _FileName);
 		
 		SaveTick(_t);
 
@@ -674,7 +675,7 @@ private:
 
 		NTSTATUS status = dwError ? RtlGetLastNtStatus() : STATUS_SUCCESS;
 
-		dbgp("[%u]:%s<%p>(%u(%x)) [%x] %S\n", TickNow(_t), __FUNCTION__, this, dwError, status, _bittest(&_dwFlags, _bSSL), _FileName);
+		dbgp_1("[%u]:%s<%p>(%u(%x)) [f=%x] %S\n", TickNow(_t), __FUNCTION__, this, dwError, status, _dwFlags, _FileName);
 		
 		SaveTick(_t);
 
@@ -692,7 +693,7 @@ private:
 
 		_ip = 0;
 
-		PostMessageW(_hwnd, e_connect, _id, dwError);
+		PostMessageW(_hwnd, e_connect, _id, status);
 
 		if (dwError)
 		{
@@ -1074,7 +1075,7 @@ private:
 		}
 		else
 		{
-			PostMessageW(_hwnd, e_connect, _id, ERROR_NOT_FOUND);
+			PostMessageW(_hwnd, e_connect, _id, DNS_ERROR_RECORD_DOES_NOT_EXIST);
 		}
 		Next();
 	}
@@ -1102,7 +1103,7 @@ private:
 
 	void Cleanup()
 	{
-		dbgp("[%u]:%s<%p>([%x] %p %S)\n", TickNow(_t), __FUNCTION__, this, _dwFlags, _hRoot, _FileName);
+		dbgp_1("[%u]:%s<%p>([f=%x] %p %S)\n", TickNow(_t), __FUNCTION__, this, _dwFlags, _hRoot, _FileName);
 
 		_cbBytesNeed.QuadPart = 0;
 		_dwBufferCount = 0;
@@ -1110,9 +1111,9 @@ private:
 
 		_status = STATUS_UNSUCCESSFUL;
 
+		_bittestandreset(&_dwFlags, _bWriteActive);
 		_bittestandreset(&_dwFlags, _bNotRead);
 		_bittestandreset(&_dwFlags, _bHandshakeDone);
-		_bittestandreset(&_dwFlags, _bWriteActive);
 		_bittestandreset(&_dwFlags, _bConnected);
 		_bittestandreset(&_dwFlags, _bIoStart);
 

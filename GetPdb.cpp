@@ -110,7 +110,7 @@ public:
 
 class CDialog : public ZDllVector
 {
-	enum { e_LogSize = 0x8000 };
+	enum { e_LogSize = 0x10000 };
 	struct DWL_PRG 
 	{
 		HWND hwndProgress, hwndStatus, hwndName;
@@ -436,9 +436,10 @@ class CDialog : public ZDllVector
 		case e_connect:
 			if ((NTSTATUS)lParam)
 			{
-				swprintf(sz, L"connect error %u", (ULONG)lParam);
+				swprintf(sz, L"connect error %x", (ULONG)lParam);
 				SetWindowText(m_arr[wParam].hwndStatus, sz);
 				SetOverallProgress((NTSTATUS)lParam);
+				DoLog((UINT)wParam, "connect", (NTSTATUS)lParam);
 			}
 			break;
 		case e_send:
