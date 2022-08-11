@@ -7,6 +7,12 @@ enum {
 };
 
 struct CNT_MODULE_INFORMATION {
-	USHORT LoadCount;
+	UCHAR LoadCount;
 	CHAR FullPathName[];
+};
+
+struct EnumData 
+{
+	HWND hwnd;
+	ULONG_PTR dwProcessId;
 };

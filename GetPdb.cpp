@@ -13,7 +13,7 @@ _NT_BEGIN
 #include "dllVector.h"
 #include "qpm.h"
 
-void EnumAllDlls(HWND hwnd);
+ULONG WINAPI EnumAllDlls(PVOID );
 BOOL IsValidPDBExist(POBJECT_ATTRIBUTES poa, PGUID Signature, DWORD Age);
 
 HANDLE g_hDrv;
@@ -26,19 +26,12 @@ HANDLE g_hDrv;
 #define FormatWin32Status(err, status) FormatStatus(err, kernel32.dll, status)
 #define FormatNTStatus(err, status) FormatStatus(err, ntdll.dll, status)
 
-NTSTATUS DoIoControl(ULONG code)
-{
-	IO_STATUS_BLOCK iosb;
-	return g_hDrv ? ZwDeviceIoControlFile(g_hDrv, 0, 0, 0, &iosb, code, 0, 0, 0, 0) : STATUS_INVALID_HANDLE;
-}
-
 LPWSTR xwcscpy(LPWSTR dst, LPCWSTR src)
 {
 	WCHAR c;
 	do *dst++ = c = *src++; while(c);
 	return dst - 1;
 }
-
 
 STATIC_WSTRING(global, "\\GLOBAL??\\");
 
@@ -107,6 +100,71 @@ public:
 #else
 #define CD_MAGIC 0x9691DAE6
 #endif
+
+void FillCombo(HWND hwndCB)
+{
+	NTSTATUS status;
+	DWORD cb = 0x40000;
+	do 
+	{
+		if (PUCHAR buf = new UCHAR[cb += PAGE_SIZE])
+		{
+			if (0 <= (status = NtQuerySystemInformation(SystemProcessInformation, buf, cb, &cb)))
+			{
+				union {
+					PBYTE pb;
+					PSYSTEM_PROCESS_INFORMATION pspi;
+				};
+
+				pb = buf;
+
+				ULONG NextEntryOffset = 0;
+				WCHAR sz[0x100];
+				int i0 = -1;
+
+				do 
+				{
+					pb += NextEntryOffset;
+
+					if (!pspi->UniqueProcessId)
+					{
+						RtlInitUnicodeString(&pspi->ImageName, L"For All loaded PE");
+					}
+
+					if (0 < swprintf_s(sz, _countof(sz), L"%04x(%04x) %x %3u %wZ", 
+						(ULONG)(ULONG_PTR)pspi->UniqueProcessId, 
+						(ULONG)(ULONG_PTR)pspi->InheritedFromUniqueProcessId,
+						pspi->SessionId, 
+						pspi->NumberOfThreads, 
+						&pspi->ImageName))
+					{
+						int i = ComboBox_AddString(hwndCB, sz);
+						if (0 <= i)
+						{
+							ComboBox_SetItemData(hwndCB, i, pspi->UniqueProcessId);
+						}
+
+						if (!pspi->UniqueProcessId)
+						{
+							i0 = i;
+						}
+					}
+
+				} while (NextEntryOffset = pspi->NextEntryOffset);
+
+				if (0 <= i0) ComboBox_SetCurSel(hwndCB, i0);
+			}
+
+			delete [] buf;
+		}
+		else
+		{
+			break;
+		}
+
+	} while (status == STATUS_INFO_LENGTH_MISMATCH);
+
+}
 
 class CDialog : public ZDllVector
 {
@@ -193,9 +251,9 @@ class CDialog : public ZDllVector
 
 		RECT rc, RC;
 		m_dx = 0;
-		if (GetWindowRect(GetDlgItem(hwnd, IDC_PROGRESS9), &RC) && GetWindowRect(GetDlgItem(hwnd, IDC_PROGRESS1), &rc))
+		if (GetWindowRect(GetDlgItem(hwnd, IDC_PROGRESS2), &RC) && GetWindowRect(hwnd, &rc))
 		{
-			if ((m_dx = RC.top - rc.top + 3) && GetWindowRect(hwnd, &rc))
+			if ((m_dx = rc.bottom - RC.top + GetSystemMetrics(SM_CYBORDER)))
 			{
 				MoveWindow(hwnd, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top - m_dx, FALSE);
 			}
@@ -203,7 +261,19 @@ class CDialog : public ZDllVector
 
 		m_szLog = new CHAR[e_LogSize];
 
-		m_hFont = CreateFont(20, 0, 0, 0, FW_NORMAL, 0, 0, 0, 0, 0, 0, 0, FIXED_PITCH|FF_MODERN, L"Courier New");
+		NONCLIENTMETRICS ncm = { sizeof(NONCLIENTMETRICS) };
+		if (SystemParametersInfo(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0))
+		{
+			ncm.lfStatusFont.lfQuality = CLEARTYPE_QUALITY;
+			ncm.lfStatusFont.lfPitchAndFamily = FIXED_PITCH|FF_MODERN;
+			wcscpy(ncm.lfStatusFont.lfFaceName, L"Courier New");
+
+			if (HFONT hFont = CreateFontIndirect(&ncm.lfStatusFont))
+			{
+				m_hFont = hFont;
+				SendDlgItemMessageW(hwnd, IDC_COMBO1, WM_SETFONT, (WPARAM)hFont, 0);
+			}
+		}
 	}
 
 	void toCtrl(HWND hwndCtrl)
@@ -359,6 +429,7 @@ class CDialog : public ZDllVector
 				SetWindowTextW(hwnd, L"debugging..");
 			}
 			break;
+
 		case WM_TIMER:
 			OnTimer(hwnd);
 			break;
@@ -433,6 +504,7 @@ class CDialog : public ZDllVector
 		case e_text:
 			SetWindowText(m_arr[wParam].hwndStatus, (PCWSTR)lParam);
 			break;
+
 		case e_connect:
 			if ((NTSTATUS)lParam)
 			{
@@ -442,11 +514,13 @@ class CDialog : public ZDllVector
 				DoLog((UINT)wParam, "connect", (NTSTATUS)lParam);
 			}
 			break;
+
 		case e_send:
 			swprintf(sz, L"send error %x", (ULONG)lParam);
 			SetWindowText(m_arr[wParam].hwndStatus, sz);
 			SetOverallProgress((NTSTATUS)lParam);
 			break;
+
 		case e_pdbcreate:
 			swprintf(sz, L"pdb create = %x", (ULONG)lParam);
 			SetWindowText(m_arr[wParam].hwndStatus, sz);
@@ -571,7 +645,9 @@ class CDialog : public ZDllVector
 		case WM_COMMAND:
 			switch(wParam)
 			{
-			case MAKEWPARAM(IDC_CHECK2, BN_CLICKED):
+			case IDC_BUTTON1:
+				ComboBox_ResetContent(hwnd = GetDlgItem(hwnd, IDC_COMBO1));
+				FillCombo(hwnd);
 				break;
 
 			case MAKEWPARAM(IDC_CHECK1, BN_CLICKED):
@@ -584,8 +660,19 @@ class CDialog : public ZDllVector
 					}
 				}
 				EnableWindow(GetDlgItem(hwnd, IDC_EDIT1), m_bAll);
-				EnableWindow(GetDlgItem(hwnd, IDC_CHECK2), m_bAll);
-				m_bAll = !m_bAll;
+
+				if (m_bAll = !m_bAll)
+				{
+					FillCombo(GetDlgItem(hwnd, IDC_COMBO1));
+				}
+				else
+				{
+					ComboBox_ResetContent(GetDlgItem(hwnd, IDC_COMBO1));
+				}
+
+				EnableWindow(GetDlgItem(hwnd, IDC_COMBO1), m_bAll);
+				EnableWindow(GetDlgItem(hwnd, IDC_BUTTON1), m_bAll);
+
 				break;
 
 			case MAKEWPARAM(IDC_EDIT2, EN_UPDATE):
@@ -608,15 +695,26 @@ class CDialog : public ZDllVector
 
 				if (m_bAll)
 				{
-					IncActive();
-					m_cbFree = e_LogSize;
-					if (HANDLE hThread = CreateThread(0, 0, (LPTHREAD_START_ROUTINE)EnumAllDlls, hwnd, 0, 0))
+					HWND hwndCB = GetDlgItem(hwnd, IDC_COMBO1);
+					int i = ComboBox_GetCurSel(hwndCB);
+					if (0 <= i)
 					{
-						ZwClose(hThread);
-					}
-					else
-					{
-						DecActive();
+						IncActive();
+						m_cbFree = e_LogSize;
+						if (EnumData* p = new EnumData)
+						{
+							p->hwnd = hwnd;
+							p->dwProcessId = ComboBox_GetItemData(hwndCB, i);
+							if (HANDLE hThread = CreateThread(0, 0, EnumAllDlls, p, 0, 0))
+							{
+								NtClose(hThread);
+							}
+							else
+							{
+								delete p;
+								DecActive();
+							}
+						}
 					}
 				}
 				else
@@ -896,6 +994,8 @@ void mpt()
 	MessageBoxW(0,0,0,0);
 }
 
+void InitWow64();
+
 void _ep()
 {
 #ifndef _WIN64
@@ -907,7 +1007,7 @@ void _ep()
 		return;
 	}
 #else
-	QUERY_PROCESS_MODULES::InitWow();
+	InitWow64();
 #endif
 	AdjustPrivileges();
 

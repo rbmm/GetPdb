@@ -10,6 +10,8 @@ _NT_BEGIN
 
 BOOL IsValidPDBExist(POBJECT_ATTRIBUTES poa, PGUID Signature, ULONG Age);
 
+extern const volatile UCHAR guz = 0;
+
 //#undef DbgPrint
 #define dbgp_0 /##/
 #define dbgp /##/
@@ -1172,7 +1174,6 @@ public:
 				return;
 			}
 
-			static volatile UCHAR guz;
 			ULONG cb = 0, rcb;
 			PVOID stack = alloca(guz);
 			PWSTR path = 0;

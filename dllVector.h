@@ -24,7 +24,7 @@ protected:
 	{
 		if (_offsets)
 		{
-			delete _offsets;
+			delete [] _offsets;
 		}
 		_Cred->Release();
 	}
@@ -33,7 +33,7 @@ protected:
 	{
 		if (_offsets)
 		{
-			delete _offsets;
+			delete [] _offsets;
 		}
 		_offsets = offsets, _N = N, _n = N;
 	}
