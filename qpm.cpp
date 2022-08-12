@@ -402,7 +402,7 @@ void NAMES::QueryLoop(
 				if (0 <= (status = MyOpenProcess(&hProcess, 
 					PROCESS_VM_OPERATION|PROCESS_CREATE_THREAD|PROCESS_QUERY_INFORMATION|PROCESS_SET_INFORMATION, &zoa, &cid)))
 				{
-					PROCESS_EXTENDED_BASIC_INFORMATION pebi;
+					PROCESS_EXTENDED_BASIC_INFORMATION pebi = {sizeof(pebi)};
 					if (0 <= (status = NtQueryInformationProcess(hProcess, ProcessBasicInformation, &pebi, sizeof(pebi), 0)))
 					{
 						if (pebi.IsProcessDeleting)
