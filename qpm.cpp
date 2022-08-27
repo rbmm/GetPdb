@@ -137,7 +137,7 @@ PSYSTEM_PROCESS_INFORMATION NAMES::BuildListOfProcesses(ULONG_PTR dwProcessId)
 		cb = sizeof(SYSTEM_PROCESS_INFORMATION);
 		pspi->NextEntryOffset = 0;
 		pspi->UniqueProcessId = (HANDLE)dwProcessId;
-		pspi->InheritedFromUniqueProcessId = INVALID_HANDLE_VALUE;
+		pspi->InheritedFromUniqueProcessId = dwProcessId == 4 ? 0 : INVALID_HANDLE_VALUE;
 	}
 	else if (0 > NtQuerySystemInformation(SystemProcessInformation, buf, _cbFree, &cb))
 	{
