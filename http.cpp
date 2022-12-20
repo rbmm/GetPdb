@@ -1,5 +1,4 @@
 #include "StdAfx.h"
-#include <WinInet.h>
 
 _NT_BEGIN
 
@@ -10,16 +9,102 @@ _NT_BEGIN
 
 BOOL IsValidPDBExist(POBJECT_ATTRIBUTES poa, PGUID Signature, ULONG Age);
 
-extern const volatile UCHAR guz = 0;
+BOOL
+CrackUrlA(
+		  _In_ PSTR lpszUrl,
+		  _Out_ INTERNET_SCHEME* pnScheme,
+		  _Out_ PSTR* lppszHostName,
+		  _Out_ INTERNET_PORT* pnPort,
+		  _Out_ PSTR* lppszUrlPath
+		  )
+{
+	if (lpszUrl[0] != 'h' || lpszUrl[1] != 't' || lpszUrl[2] != 't' || lpszUrl[3] != 'p')
+	{
+		return FALSE;
+	}
 
-//#undef DbgPrint
-#define dbgp_0 /##/
-#define dbgp /##/
-#define dbgp_1 /##/
-#define DbgPrintEx /##/
+	*pnPort = INTERNET_DEFAULT_HTTP_PORT;
+	*pnScheme = INTERNET_SCHEME_HTTP;
+
+	if (lpszUrl[4] == 's')
+	{
+		*pnScheme = INTERNET_SCHEME_HTTPS;
+		*pnPort = INTERNET_DEFAULT_HTTPS_PORT;
+		lpszUrl++;
+	}
+
+	if (lpszUrl[4] != ':' || lpszUrl[5] != '/' || lpszUrl[6] != '/')
+	{
+		return FALSE;
+	}
+	
+	PSTR lpszHostName = lpszUrl += 7;
+
+	if (!(lpszUrl = strchr(lpszHostName, '/')))
+	{
+		return FALSE;
+	}
+
+	*lpszUrl++ = 0;
+	*lppszHostName = lpszHostName;
+	*lppszUrlPath = lpszUrl;
+
+	if (lpszUrl = strchr(lpszUrl, '#'))
+	{
+		*lpszUrl = 0;
+	}
+
+	if (lpszUrl = strchr(lpszHostName, ':'))
+	{
+		*lpszUrl = 0;
+		ULONG nPort = strtoul(lpszUrl + 1, &lpszUrl, 10);
+		if (*lpszUrl || nPort > MAXUSHORT)
+		{
+			return FALSE;
+		}
+
+		*pnPort = (INTERNET_PORT)nPort;
+	}
+
+	return TRUE;
+}
+
+extern const volatile UCHAR guz = 0;
 
 #define SaveTick(t) t = GetTickCount()
 #define TickNow(t) GetTickCount() - t
+
+//#define __DBG__
+
+#ifdef __DBG__
+#undef DbgPrint
+
+void
+__cdecl
+DbgPrint_Empty (
+		  PCSTR /*Format*/,
+		  ...
+		  )
+{
+}
+
+//#define DbgPrint DbgPrint_Empty
+
+void PrintStr(PSTR psz, ULONG cch)
+{
+	ULONG len;
+	do 
+	{
+		DbgPrint("%.*s", len = min(0x100, cch), psz);
+	} while (psz += len, cch -= len);
+}
+#else
+#define PrintStr /##/
+#endif
+
+#define dbgp /##/
+#define dbgp_0 /##/
+#define dbgp_1 /##/
 
 PSTR ParseHTTPStatusLine(PSTR buf, ULONG cb, PULONG pStatusCode, PULONG pdwMajorVersion = 0, PULONG pdwMinorVersion = 0)
 {
@@ -207,6 +292,7 @@ class CFileWriter : public IO_OBJECT
 {
 	enum { opWrite, opCmp };
 	LARGE_INTEGER _ByteOffset{}, _EndOfFile{};
+	BOOL _bUnknownSize = FALSE;
 	CyclicBuferExW* _pDD;
 
 	~CFileWriter()
@@ -234,11 +320,14 @@ public:
 
 		if (HANDLE hFile = getHandleNoLock())
 		{
+			IO_STATUS_BLOCK iosb;
 			if (_ByteOffset.QuadPart < _EndOfFile.QuadPart)
 			{
-				IO_STATUS_BLOCK iosb;
-				static FILE_DISPOSITION_INFORMATION fdi = { TRUE };
-				NtSetInformationFile(hFile, &iosb, &fdi, sizeof(fdi), FileDispositionInformation);
+				if (!_bUnknownSize || 0 > NtSetInformationFile(hFile, &iosb, &_ByteOffset, sizeof(_ByteOffset), FileEndOfFileInformation))
+				{
+					static FILE_DISPOSITION_INFORMATION fdi = { TRUE };
+					NtSetInformationFile(hFile, &iosb, &fdi, sizeof(fdi), FileDispositionInformation);
+				}
 			}
 
 			Close();
@@ -274,12 +363,13 @@ public:
 		return false;
 	}
 
-	NTSTATUS Create(POBJECT_ATTRIBUTES poa, PLARGE_INTEGER EndOfFile)
+	NTSTATUS Create(POBJECT_ATTRIBUTES poa, PLARGE_INTEGER EndOfFile, BOOL bUnknownSize)
 	{
 		if (getHandleNoLock()) __debugbreak();
 
 		//dbgp("%s<%p>(%wZ, %I64x)\n", __FUNCTION__, this, poa->ObjectName, EndOfFile->QuadPart);
 
+		_bUnknownSize = bUnknownSize;
 		HANDLE hFile;
 		IO_STATUS_BLOCK iosb;
 
@@ -316,7 +406,7 @@ public:
 
 	void OnWrite(ULONG_PTR dwNumberOfBytesTransfered)
 	{
-		if (!_pDD->getIOcount())__debugbreak();//$$$
+		if (!_pDD->getIOcount()) __debugbreak();//$$$
 
 		_ByteOffset.QuadPart += dwNumberOfBytesTransfered;
 
@@ -341,7 +431,7 @@ private:
 		switch(Code)
 		{
 		case opCmp:
-			if (0 <= status)
+			if (0 <= status && !_bUnknownSize)
 			{
 				HANDLE hFile;
 				if (LockHandle(hFile))
@@ -388,6 +478,7 @@ class CFileDownloadS : public CSSLEndpoint, public CyclicBuferExW
 	ZDllVector* _task;
 	HANDLE _hRoot = 0;
 	HWND _hwnd;
+	Log* _log = 0;
 	CFileWriter* _pFileWriter = 0;
 	WSABUF _Buffers[2];
 	ULONG _dwBufferCount;
@@ -399,16 +490,38 @@ class CFileDownloadS : public CSSLEndpoint, public CyclicBuferExW
 	NTSTATUS _status = STATUS_UNSUCCESSFUL;
 	LONG _dwFlags = 0;
 	enum {
-		_bHandshakeDone, _bSSL, _bNotRead, _bRedirected, _bReCreate, _bIoStart, _bWriteActive, _bConnected
+		_bHandshakeDone, _bSSL, _bNotRead, _bRedirected, _bReCreate, _bIoStart, _bWriteActive, _bConnected, _bUnknownLength, _bOk
 	};
-	INTERNET_PORT _nPort;
+	INTERNET_PORT _nPort = 0x5000; //_byteswap_ushort(INTERNET_DEFAULT_HTTP_PORT);
 
 private:
+	
+	virtual void OnEncryptDecryptError(SECURITY_STATUS s)
+	{
+		Log& log = *_log;
+		if (&log)
+		{
+			log("!! EncryptDecryptError %x\r\n", s);
+			log[s];
+		}
+	}
 
 	virtual void LogError(ULONG opCode, ULONG dwError)
 	{
 		_status = RtlGetLastNtStatus();
-		dbgp_1("[%u]:%s<%p>(%.4s %x(%u) %S)\n", TickNow(_t), __FUNCTION__, this, &opCode, RtlGetLastNtStatus(), dwError, _FileName);
+		Log& log = *_log;
+		if (&log)
+		{
+			NTSTATUS status = RtlGetLastNtStatus();
+			if (RtlNtStatusToDosErrorNoTeb(status) == dwError)
+			{
+				dwError = HRESULT_FROM_NT(status);
+			}
+			log("!! error (%.4s %x %S)\r\n", &opCode, dwError & ~FACILITY_NT_BIT, _FileName);
+			log[dwError];
+		}
+
+		dbgp_1("[%u]:%s<%p>(%.4s %x(%u))\n", TickNow(_t), __FUNCTION__, this, &opCode, RtlGetLastNtStatus(), dwError);
 	}
 
 	virtual ULONG GetMinReadBufferSize()
@@ -592,7 +705,7 @@ private:
 			memcpy(_Buffers, lpBuffers, dwBufferCount * sizeof(WSABUF));
 
 			dbgp("[%08x][%x]:%s<%p> ReadTo(%d) (%p,%x)%c(%p,%x)\n", GetCurrentThreadId(), getIOcount(), __FUNCTION__, this, dwBufferCount, lpBuffers->buf, lpBuffers->len, dwBufferCount == 1 ? 0 : ' ', lpBuffers[1].buf, lpBuffers[1].len);
-
+			dbgp("\n");
 			Recv();
 		}
 		else
@@ -628,14 +741,20 @@ private:
 		
 		SaveTick(_t);
 
+		Log& log = *_log;
+		if (&log)
+		{
+			log << "\r\nOnDisconnect\r\n";
+		}
+
 		if (_bittest(&_dwFlags, _bRedirected))
 		{
 			PostMessageW(_hwnd, e_text, _id, (LPARAM)L"redirect...");
 		}
 		else
 		{
-			PostMessageW(_hwnd, e_disconnect, _id, 
-				_pFileWriter->IsCreated() && !_cbBytesNeed.QuadPart ? STATUS_SUCCESS : _status);
+			PostMessageW(_hwnd, e_disconnect, _id, _pFileWriter->IsCreated() && 
+				(_bittest(&_dwFlags, _bUnknownLength) || !_cbBytesNeed.QuadPart) ? _bittestandset(&_dwFlags, _bOk), STATUS_SUCCESS : _status);
 		}
 
 		StopSSL();
@@ -657,6 +776,12 @@ private:
 	{
 		__super::CloseObjectHandle(hFile);
 
+		Log& log = *_log;
+		if (&log)
+		{
+			log("CloseObjectHandle(%08X)\r\n", _dwFlags);
+		}
+
 		if (_bittestandreset(&_dwFlags, _bReCreate))
 		{
 			if (CTcpEndpoint::Create(SI::dwAllocationGranularity + 1))
@@ -677,20 +802,38 @@ private:
 
 		NTSTATUS status = dwError ? RtlGetLastNtStatus() : STATUS_SUCCESS;
 
+		if (RtlNtStatusToDosErrorNoTeb(status) == dwError)
+		{
+			if (dwError)
+			{
+				dwError = HRESULT_FROM_NT(status);
+			}
+		}
+		else
+		{
+			status = HRESULT_FROM_WIN32(dwError);
+		}
+
+		Log& log = *_log;
+		if (&log)
+		{
+			log("OnConnect(%x)\r\n", dwError & ~FACILITY_NT_BIT);
+			if (dwError)
+			{
+				log[dwError];
+			}
+		}
+
 		dbgp_1("[%u]:%s<%p>(%u(%x)) [f=%x] %S\n", TickNow(_t), __FUNCTION__, this, dwError, status, _dwFlags, _FileName);
-		
 		SaveTick(_t);
 
 		switch (status)
 		{
 		case STATUS_ADDRESS_ALREADY_EXISTS:
 		case STATUS_CONNECTION_ACTIVE:
-			if (!_task->IsSingle())
-			{
-				_bittestandset(&_dwFlags, _bReCreate);
-				Close();
-				return FALSE;
-			}
+			_bittestandset(&_dwFlags, _bReCreate);
+			Close();
+			return FALSE;
 		}
 
 		_ip = 0;
@@ -699,6 +842,7 @@ private:
 
 		if (dwError)
 		{
+			_status = dwError;
 			Next();
 			return FALSE;
 		}
@@ -722,7 +866,7 @@ private:
 
 	virtual SECURITY_STATUS OnEndHandshake()
 	{
-		//dbgp("%s<%p>\n", __FUNCTION__, this);
+		dbgp("%s<%p>\n", __FUNCTION__, this);
 		PostMessageW(_hwnd, e_text, _id, (LPARAM)L"EndHandshake");
 
 		_bittestandset(&_dwFlags, _bHandshakeDone);
@@ -740,6 +884,16 @@ private:
 	// return size of headers
 	ULONG CheckResponce(PSTR Buf, ULONG cbTransferred)
 	{
+		if (PSTR body = strnstr(cbTransferred, Buf, 4, "\r\n\r\n"))
+		{
+			//PrintStr(Buf, RtlPointerToOffset(Buf, body));
+			Log& log = *_log;
+			if (&log)
+			{
+				log.write(Buf, RtlPointerToOffset(Buf, body));
+			}
+		}
+
 		ULONG StatusCode, LineCount;
 
 		PSTR headers = ParseHTTPStatusLine(Buf, cbTransferred, &StatusCode);
@@ -781,15 +935,16 @@ private:
 						{
 							if (fRedirect)
 							{
-								URL_COMPONENTSA uc = { sizeof(uc) };
-								uc.dwHostNameLength = 1;
-								uc.dwUrlPathLength = 1;
 								body = *values;
 								while (*body == ' ') body++;
 
-								if (InternetCrackUrlA(body, 0, 0, &uc))
+								INTERNET_SCHEME nScheme;
+								INTERNET_PORT nPort;
+								PSTR lpszUrlPath, lpszHostName;
+
+								if (CrackUrlA(body, &nScheme, &lpszHostName, &nPort, &lpszUrlPath))
 								{
-									switch (uc.nScheme)
+									switch (nScheme)
 									{
 									case INTERNET_SCHEME_HTTP:
 										_bittestandreset(&_dwFlags, _bSSL);
@@ -797,36 +952,44 @@ private:
 									case INTERNET_SCHEME_HTTPS:
 										_bittestandset(&_dwFlags, _bSSL);
 										break;
-									default: return 0;
+									default: __assume(false);
 									}
 
-									_nPort = _byteswap_ushort(uc.nPort);
+									int len = (int)strlen(lpszHostName);
 
-									STATIC_ASTRING(format, "GET %.*s HTTP/1.1\r\n"
-										"Host: %.*s\r\n"
-										"User-Agent: Microsoft-Symbol-Server/10.0.0.0\r\n"
-										"Connection: Close\r\n"
-										"\r\n");
-
-									if (sizeof(format) + uc.dwHostNameLength + uc.dwUrlPathLength <= ZRingBuffer::GetSize())
+									if (PVOID pv = _malloca(++len))
 									{
-										if (PVOID lpszHostName = _malloca(uc.dwHostNameLength))
+										memcpy(pv, lpszHostName, len);
+
+										_nPort = _byteswap_ushort(nPort);
+
+										STATIC_ASTRING(format, "GET /%s HTTP/1.0\r\n"
+											"Host: %s\r\n"
+											"User-Agent: Microsoft-Symbol-Server/10.0.0.0\r\n"
+											"Connection: Close\r\n"
+											"\r\n");
+
+										PSTR buf = (PSTR)ZRingBuffer::GetBuffer();
+
+										len = sprintf_s(buf, ZRingBuffer::GetSize(), format, lpszUrlPath, pv);
+
+										_freea(pv);
+
+										if (0 < len)
 										{
-											memcpy(lpszHostName, uc.lpszHostName, uc.dwHostNameLength);
-
-											PSTR buf = (PSTR)ZRingBuffer::GetBuffer();
-
-											_dwGetDataSize = sprintf(buf, format, 
-												uc.dwUrlPathLength, uc.lpszUrlPath, 
-												uc.dwHostNameLength, lpszHostName);
-
-											memcpy(buf + _dwGetDataSize, lpszHostName, uc.dwHostNameLength);
-
-											buf[uc.dwHostNameLength + _dwGetDataSize] = 0;
+											_dwGetDataSize = len;
 
 											_bittestandset(&_dwFlags, _bRedirected);
 
-											_freea(lpszHostName);
+											//PrintStr(buf, len);
+											Log& log = *_log;
+											if (&log)
+											{
+												log.write(buf, len);
+											}
+
+											// try prevent STATUS_ADDRESS_ALREADY_EXISTS
+											Sleep(100);
 										}
 									}
 
@@ -857,6 +1020,13 @@ private:
 						}
 
 					} while (values++, --LineCount);
+
+					if (StatusCode == 200)
+					{
+						_bittestandset(&_dwFlags, _bUnknownLength);
+						_cbBytesNeed.QuadPart = 0x200000000;//8Gb
+						return RtlPointerToOffset(Buf, body);
+					}
 				}
 			}
 		}
@@ -952,7 +1122,7 @@ private:
 				OBJECT_ATTRIBUTES oa = { sizeof(oa), _hRoot, &ObjectName };
 				RtlInitUnicodeString(&ObjectName, _FileName);
 
-				NTSTATUS status = _pFileWriter->Create(&oa, &_cbBytesNeed);
+				NTSTATUS status = _pFileWriter->Create(&oa, &_cbBytesNeed, _bittest(&_dwFlags, _bUnknownLength));
 
 				if (_hRoot)
 				{
@@ -970,7 +1140,7 @@ private:
 
 				_dwExtraSize = (_BytesPerSector - _cbBytesNeed.LowPart) & (_BytesPerSector - 1);
 
-				PostMessageW(_hwnd, e_length, _id, _cbBytesNeed.LowPart);
+				NotifyUI(e_length);
 
 				if (!(cbTransferred -= cb))
 				{
@@ -990,15 +1160,14 @@ private:
 				// redirect or fail
 				_status = STATUS_OBJECT_NAME_NOT_FOUND;
 				_bittestandset(&_dwFlags, _bNotRead);
-				if (!_bittest(&_dwFlags, _bRedirected) && _task->IsSingle())
+				if (!_bittest(&_dwFlags, _bRedirected))
 				{
-					if (CDataPacket* packet = new(cbTransferred+1) CDataPacket)
+					Log& log = *_log;
+					if (&log)
 					{
-						memcpy(packet->getData(), Buf, cbTransferred);
-						packet->getData()[cbTransferred] = 0;
-						if (!PostMessageW(_hwnd, e_packet, 0, (LPARAM)packet))
+						if (PSTR body = strnstr(cbTransferred, Buf, 4, "\r\n\r\n"))
 						{
-							packet->Release();
+							log.write(body, cbTransferred - RtlPointerToOffset(Buf, body));
 						}
 					}
 				}
@@ -1044,7 +1213,7 @@ private:
 				dbgp_0("%08x:OnUserData-end(%x)\n", GetCurrentThreadId(), cbReaded);
 			}
 
-			PostMessageW(_hwnd, e_recv, _id, _cbBytesNeed.LowPart);
+			NotifyUI(e_recv);
 		}
 		else
 		{
@@ -1054,11 +1223,25 @@ private:
 		return !_bittest(&_dwFlags, _bNotRead);
 	}
 
+	void NotifyUI(UINT msg)
+	{
+		PostMessageW(_hwnd, msg, _id, _bittest(&_dwFlags, _bUnknownLength) ? (ULONG)(_cbBytesNeed.QuadPart >> 3) : _cbBytesNeed.LowPart);
+	}
+
 	virtual void OnIp(ULONG ip)
 	{
 		dbgp("[%u]:%s<%p><%S>(%s) -> %x:%x\n", TickNow(_t), __FUNCTION__, this, _FileName, (PSTR)ZRingBuffer::GetBuffer() + _dwGetDataSize, ip, _byteswap_ushort(_nPort));
 		
 		SaveTick(_t);
+
+		Log& log = *_log;
+		if (&log)
+		{
+			char sz[24];
+			ULONG n = _countof(sz);
+			RtlIpv4AddressToStringExA((in_addr *)&ip, _nPort, sz, &n);
+			log("OnIp(%s)\r\n", sz);
+		}
 
 		if (ip)
 		{
@@ -1086,6 +1269,24 @@ private:
 	{
 		dbgp("[%u]:%s<%p>\n", TickNow(_t), __FUNCTION__, this);
 		_bittestandreset(&_dwFlags, _bRedirected);
+
+		Log& log = *_log;
+		if (&log)
+		{
+			if (!_bittest(&_dwFlags, _bOk))
+			{
+				if (PWSTR psz = log)
+				{
+					if (!PostMessageW(_hwnd, e_packet, 0, (LPARAM)psz))
+					{
+						LocalFree(psz);
+					}
+				}
+			}
+
+			delete &log;
+			_log = 0;
+		}
 
 		Cleanup();
 
@@ -1118,20 +1319,26 @@ private:
 		_bittestandreset(&_dwFlags, _bHandshakeDone);
 		_bittestandreset(&_dwFlags, _bConnected);
 		_bittestandreset(&_dwFlags, _bIoStart);
+		_bittestandreset(&_dwFlags, _bUnknownLength);
 
 		if (!_bittestandreset(&_dwFlags, _bRedirected))
 		{
 			_bittestandreset(&_dwFlags, _bSSL);
 
-			if (_FileName)
+			union {
+				PWSTR FileName;
+				HANDLE hRoot;
+			};
+
+			if (FileName = _FileName)
 			{
-				delete [] _FileName;
+				delete [] FileName;
 				_FileName = 0;
 			}
 
-			if (_hRoot)
+			if (hRoot = _hRoot)
 			{
-				NtClose(_hRoot);
+				NtClose(hRoot);
 				_hRoot = 0;
 			}
 		}
@@ -1170,7 +1377,12 @@ public:
 				PostMessageW(_hwnd, e_text, _id, (LPARAM)L"resolving host...");
 				//dbgp("%s<%p>(%s)\n", __FUNCTION__, this, (PSTR)ZRingBuffer::GetBuffer() + _dwGetDataSize);
 
-				DnsToIp((PCSTR)ZRingBuffer::GetBuffer() + _dwGetDataSize, DNS_RTYPE_A, DNS_QUERY_NO_WIRE_QUERY);
+				STATIC_ASTRING(Host, "\r\nHost: ");
+				PSTR host = strnstr(_dwGetDataSize, (PSTR)ZRingBuffer::GetBuffer(), _countof(Host) - 1, Host);
+				PSTR pc = strchr(host, '\r');
+				*pc = 0;
+				DnsToIp(host, DNS_RTYPE_A, DNS_QUERY_NO_WIRE_QUERY);
+				*pc = '\r';
 				return;
 			}
 
@@ -1180,6 +1392,8 @@ public:
 			STATIC_WSTRING(globalroot, "\\\\.\\global\\globalroot");
 
 			LONG n;
+
+			ULONG iServer = _task->GetServer(), ip = _task->get_ip();
 
 			while (!_task->IsStop())
 			{
@@ -1199,14 +1413,14 @@ public:
 
 					if (bNtPath)
 					{
-						swprintf(path, L"%s%S", globalroot, name);
+						swprintf_s(path, cb >> 1, L"%s%S", globalroot, name);
 					}
 					else
 					{
-						swprintf(path, L"%S", name);
+						swprintf_s(path, cb >> 1, L"%S", name);
 					}
 
-					NTSTATUS status = GetPdbforPE(path);
+					NTSTATUS status = GetPdbforPE(iServer, path);
 
 					if (status) 
 					{
@@ -1218,7 +1432,7 @@ public:
 
 					_nPort = 0x5000; //_byteswap_ushort(INTERNET_DEFAULT_HTTP_PORT);
 
-					if (status = Connect(_ip = _task->get_ip(), 0x5000))
+					if (status = Connect(_ip = ip, 0x5000))
 					{
 						_ip = 0;
 						PostMessageW(_hwnd, e_connect, _id, status);
@@ -1254,7 +1468,7 @@ public:
 		_id = task->get_ID();
 	}
 
-	NTSTATUS GetPdbforPE(PCWSTR lpszName)
+	NTSTATUS GetPdbforPE(ULONG iServer, PCWSTR lpszName)
 	{
 		HMODULE hmod = LoadLibraryExW(lpszName, 0, LOAD_LIBRARY_AS_DATAFILE);
 
@@ -1291,7 +1505,7 @@ public:
 								PdbFileName = c + 1;
 							}
 
-							status = Init(PdbFileName, &lpcvh->Signature, lpcvh->Age);
+							status = Init(iServer, PdbFileName, &lpcvh->Signature, lpcvh->Age);
 
 							break;
 						}
@@ -1339,38 +1553,11 @@ public:
 		return status;
 	}
 
-	NTSTATUS Init(PCSTR PdbFileName, PGUID Signature, ULONG Age)
+	NTSTATUS Init(ULONG iServer, PCSTR PdbFileName, PCWSTR FileName, PGUID Signature, ULONG Age)
 	{
-		Cleanup();
+		WCHAR sz[0x100];
 
-		ULONG UTF8StringByteCount = (ULONG)strlen(PdbFileName) + 1;
-		ULONG UnicodeStringLen = MultiByteToWideChar(CP_UTF8, 0, PdbFileName, UTF8StringByteCount, 0, 0);
-
-		if (!UnicodeStringLen)
-		{
-			return STATUS_UNSUCCESSFUL;
-		}
-
-		if (UnicodeStringLen >= MAXSHORT)
-		{
-			return STATUS_NAME_TOO_LONG;
-		}
-
-		if (!(_FileName = new WCHAR[UnicodeStringLen]))
-		{
-			return STATUS_INSUFF_SERVER_RESOURCES;
-		}
-
-		UnicodeStringLen = MultiByteToWideChar(CP_UTF8, 0, PdbFileName, UTF8StringByteCount, _FileName, UnicodeStringLen);
-
-		if (!UnicodeStringLen)
-		{
-			return STATUS_NAME_TOO_LONG;
-		}
-
-		WCHAR sz[256];
-
-		swprintf(sz, L"%08X%04X%04X%02X%02X%02X%02X%02X%02X%02X%02X%x", 
+		swprintf_s(sz, _countof(sz), L"%08X%04X%04X%02X%02X%02X%02X%02X%02X%02X%02X%x", 
 			Signature->Data1, Signature->Data2, Signature->Data3,
 			Signature->Data4[0], Signature->Data4[1], Signature->Data4[2], Signature->Data4[3], 
 			Signature->Data4[4], Signature->Data4[5], Signature->Data4[6], Signature->Data4[7], Age);
@@ -1379,12 +1566,12 @@ public:
 		IO_STATUS_BLOCK iosb;
 		UNICODE_STRING ObjectName;
 		OBJECT_ATTRIBUTES oa = { sizeof(oa), _task->get_Root(), &ObjectName };
-		RtlInitUnicodeString(&ObjectName, _FileName);
+		RtlInitUnicodeString(&ObjectName, FileName);
 
 		NTSTATUS status = NtCreateFile(&hRoot, FILE_ADD_SUBDIRECTORY|SYNCHRONIZE, &oa, &iosb, 0, 
 			0, FILE_SHARE_VALID_FLAGS, FILE_OPEN_IF, FILE_DIRECTORY_FILE, 0, 0);
 
-		//DbgPrintEx ( DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "%s<%p>: %wZ\n",  __FUNCTION__, this, &ObjectName);
+		dbgp("%s<%p>: %wZ\n", __FUNCTION__, this, &ObjectName);
 
 		if (0 > status)
 		{
@@ -1408,7 +1595,7 @@ public:
 			return status;
 		}
 
-		RtlInitUnicodeString(&ObjectName, _FileName);
+		RtlInitUnicodeString(&ObjectName, FileName);
 		oa.RootDirectory = _hRoot;
 
 		if (IsValidPDBExist(&oa, Signature, Age))
@@ -1427,28 +1614,77 @@ public:
 			}
 		}
 
-		STATIC_ASTRING(httpHeader, "GET /download/symbols/"
-			"%s/%08X%04X%04X%02X%02X%02X%02X%02X%02X%02X%02X%x/%s HTTP/1.1"
+		static PCSTR s_paths[] = {
+			"/download/symbols/", // msdl.microsoft.com
+			"/", // chromium-browser-symsrv.commondatastorage.googleapis.com
+			"/", // symbols.mozilla.org
+			"/sites/downloads/symbols/", // software.intel.com
+			"/dir/bin/", // download.amd.com
+			"/", // driver-symbols.nvidia.com
+		};
+
+		STATIC_ASTRING(httpHeader, "GET %s%s/%08X%04X%04X%02X%02X%02X%02X%02X%02X%02X%02X%x/%s HTTP/1.0"
 			"\r\nUser-Agent: Microsoft-Symbol-Server/10.0.0.0"
-			"\r\nHost: msdl.microsoft.com"
+			"\r\nHost: %s"
 			"\r\nConnection: close\r\n\r\n");
 
 		PSTR buf = (PSTR)ZRingBuffer::GetBuffer();
 
-		_dwGetDataSize = _snprintf(buf, ZRingBuffer::GetSize(),
-			httpHeader,
+		int len = sprintf_s(buf, ZRingBuffer::GetSize(),
+			httpHeader, s_paths[iServer],
 			PdbFileName, Signature->Data1, Signature->Data2, Signature->Data3,
 			Signature->Data4[0], Signature->Data4[1], Signature->Data4[2], Signature->Data4[3], 
-			Signature->Data4[4], Signature->Data4[5], Signature->Data4[6], Signature->Data4[7], Age, PdbFileName);
+			Signature->Data4[4], Signature->Data4[5], Signature->Data4[6], Signature->Data4[7], Age, PdbFileName,
+			g_Servers[iServer]);
 
-		if (_dwGetDataSize >= ZRingBuffer::GetSize())
+		if (0 >= len)
 		{
 			return STATUS_UNSUCCESSFUL;
 		}
 
-		dbgp_0(buf);
+		_dwGetDataSize = len;
+		//PrintStr(buf, _dwGetDataSize);
+		Log& log = *_log;
+		if (&log)
+		{
+			log.write(buf, len);
+		}
 
 		return status;
+	}
+
+	NTSTATUS Init(ULONG iServer, PCSTR PdbFileName, PGUID Signature, ULONG Age)
+	{
+		Cleanup();
+
+		ULONG UnicodeStringLen = 0;
+		PWSTR FileName = 0;
+
+		while (UnicodeStringLen = MultiByteToWideChar(CP_UTF8, 0, PdbFileName, MAXULONG, FileName, UnicodeStringLen))
+		{
+			if (FileName)
+			{
+				_FileName = FileName;
+				return Init(iServer, PdbFileName, FileName, Signature, Age);
+			}
+
+			if (UnicodeStringLen >= MAXSHORT)
+			{
+				return STATUS_NAME_TOO_LONG;
+			}
+
+			if (!(FileName = new WCHAR[UnicodeStringLen]))
+			{
+				return STATUS_NO_MEMORY;
+			}
+		}
+
+		if (FileName)
+		{
+			delete [] FileName;
+		}
+		
+		return STATUS_UNSUCCESSFUL;
 	}
 
 	ULONG Create()
@@ -1464,6 +1700,32 @@ public:
 		}
 
 		return NOERROR;
+	}
+
+	INTERNET_PORT SetProtocol(ULONG iServer)
+	{
+		switch (iServer)
+		{
+		case s_intel:
+		case s_mozilla:
+		case s_amd:
+		case s_nvidia:
+			_bittestandset(&_dwFlags, _bSSL);
+			_nPort = 0xbb01;
+			break;
+		}
+
+		return _nPort;
+	}
+
+	void SetLog(Log* log)
+	{
+		_log = log;
+	}
+
+	ULONG get_ID()
+	{
+		return _id;
 	}
 };
 
@@ -1489,19 +1751,39 @@ ULONG CreateSingleDownload(SDP* params)
 
 	if (CFileDownloadS* p = new CFileDownloadS(task))
 	{
+		if (task->IsSingle())
+		{
+			if (Log* log = new Log)
+			{
+				if (log->Init(0x10000))
+				{
+					delete log;
+				}
+				else
+				{
+					p->SetLog(log);
+				}
+			}
+		}
+
+		ULONG iServer = task->GetServer();
+
 		if (!(dwError = p->Create()) &&
 			!(dwError = RtlNtStatusToDosError(params->type == SDP::e_path ? 
-			p->GetPdbforPE(params->DllFileName) : p->Init(params->PdbFileName, &params->Signature, params->Age))))
+			p->GetPdbforPE(iServer, params->DllFileName) : p->Init(iServer, params->PdbFileName, &params->Signature, params->Age))))
 		{
 			task->Register(p, 0);
-			PostMessageW(task->get_HWND(), e_text, task->get_ID(), (LPARAM)L"connecting(0)...");
-			dwError = p->Connect(task->get_ip(), 0x5000);
+
+			PostMessageW(task->get_HWND(), e_text, p->get_ID(), (LPARAM)L"connecting(0)...");
+
+			dwError = p->Connect(task->get_ip(), p->SetProtocol(iServer));
 		}
 
 		if (dwError)
 		{
 			p->Next();
 		}
+
 		p->Release();
 	}
 

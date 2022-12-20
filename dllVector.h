@@ -2,21 +2,23 @@
 
 #include "common.h"
 
+extern PCSTR g_Servers[];
+
+enum { s_microsoft, s_google, s_mozilla, s_intel, s_amd , s_nvidia };
+
 class __declspec(novtable) ZDllVector
 {
-	CTcpEndpoint* _vec[8];
+	CTcpEndpoint* _vec[8]{};
 	SharedCred* _Cred;
-	PULONG _offsets;
-	ULONG _N, _ip;
-	LONG _n, _id, _ActiveCount;
+	PULONG _offsets = 0;
+	ULONG _N = 0, _ip = 0, _iServer = 0;
+	LONG _n = 0, _id, _ActiveCount;
 	BOOLEAN _bSingle, _bStop;
 
 protected:
 
 	ZDllVector(SharedCred* Cred) : _Cred(Cred)
 	{
-		_offsets = 0, _n = 0, _N = 0, _ip = 0;
-		RtlZeroMemory(_vec, sizeof(_vec));
 		Cred->AddRef();
 	}
 
@@ -51,6 +53,11 @@ protected:
 	void set_ip(ULONG ip)
 	{
 		_ip = ip;
+	}
+
+	void SetServer(ULONG iServer)
+	{
+		_iServer = iServer;
 	}
 
 	void Stop(ULONG i, BOOL bClose)
@@ -102,6 +109,11 @@ public:
 	ULONG get_ID()
 	{
 		return InterlockedIncrement(&_id) - 1;
+	}
+
+	ULONG GetServer()
+	{
+		return _iServer;
 	}
 
 	ULONG get_ip()

@@ -13,6 +13,8 @@
 #include <mstcpip.h>
 #include <MSWSock.h>
 #include <commctrl.h>
+#include <WinInet.h>
+
 _NT_BEGIN
 #include <tdi.h>
 #include <schannel.h>

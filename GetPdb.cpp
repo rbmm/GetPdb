@@ -35,6 +35,8 @@ LPWSTR xwcscpy(LPWSTR dst, LPCWSTR src)
 
 STATIC_WSTRING(global, "\\GLOBAL??\\");
 
+enum { TimerID = 1 };
+
 NTSTATUS OpenFolderIf(PHANDLE phFile, PCWSTR sz, PCWSTR path)
 {
 	HANDLE hFile = 0;
@@ -81,17 +83,17 @@ DWORD WorkItem(ZDllVector* task);
 class MsIp : public CSocketObject
 {
 	HWND m_hwnd;
+	ULONG m_iServer;
 
 public:
 
 	virtual void OnIp(DWORD ip)
 	{
-		PostMessage(m_hwnd, e_ip, 0, ip);
+		PostMessage(m_hwnd, e_ip, m_iServer, ip);
 	}
 
-	MsIp(HWND hwnd)
+	MsIp(HWND hwnd, ULONG iServer) : m_iServer(iServer), m_hwnd(hwnd)
 	{
-		m_hwnd = hwnd;
 	}
 };
 
@@ -163,8 +165,16 @@ void FillCombo(HWND hwndCB)
 		}
 
 	} while (status == STATUS_INFO_LENGTH_MISMATCH);
-
 }
+
+PCSTR g_Servers[] = {
+	"msdl.microsoft.com", // https://msdl.microsoft.com/download/symbols/
+	"chromium-browser-symsrv.commondatastorage.googleapis.com", // https://chromium-browser-symsrv.commondatastorage.googleapis.com/
+	"symbols.mozilla.org", // https://symbols.mozilla.org/
+	"software.intel.com", // https://software.intel.com/sites/downloads/symbols/
+	"download.amd.com", // https://download.amd.com/dir/bin
+	"driver-symbols.nvidia.com", // https://driver-symbols.nvidia.com/
+};
 
 class CDialog : public ZDllVector
 {
@@ -176,12 +186,12 @@ class CDialog : public ZDllVector
 	LONG m_nv[8];
 
 	HWND m_hwnd, m_hwndCD;
-	HANDLE m_hRoot;
-	PSTR m_szLog;
-	HFONT m_hFont;
-	LONG m_dwRef, m_dx;
+	HANDLE m_hRoot = 0;
+	PSTR m_szLog = 0;
+	HFONT m_hFont = 0;
+	LONG m_dwRef = 1, m_dx;
 	ULONG m_nProcessed, m_nOk, m_nFail, m_nExist, m_cbFree, m_crc;
-	BOOLEAN m_bDirChanged, m_DownloadActive, m_bAll, m_bTimerActive;
+	BOOLEAN m_bDirChanged = TRUE, m_DownloadActive = FALSE, m_bAll = 0, m_bTimerActive = 0;
 
 	//---------------------------------------------------------
 
@@ -204,22 +214,27 @@ class CDialog : public ZDllVector
 	
 	void OnTimer(HWND hwnd)
 	{
-		if (MsIp* p = new MsIp(hwnd))
+		ULONG iServer = GetServer();
+		if (MsIp* p = new MsIp(hwnd, iServer))
 		{
-			p->DnsToIp("msdl.microsoft.com");
+			p->DnsToIp(g_Servers[iServer]);
 			p->Release();
 		}
+	}
+
+	void ActivateTimer(HWND hwnd)
+	{
+		OnTimer(hwnd);
+		m_bTimerActive = SetTimer(hwnd, TimerID, 2000, 0) != 0;
 	}
 
 	void OnInitDialog(HWND hwnd)
 	{
 		AddRef();
 
-		OnTimer(hwnd);
-
 		m_hwnd = hwnd, m_hwndCD = 0, m_crc = 0;
 
-		m_bTimerActive = SetTimer(hwnd, 1, 5000, 0) != 0;
+		ActivateTimer(hwnd);
 
 		SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)LoadImage((HINSTANCE)&__ImageBase, 
 			MAKEINTRESOURCE(IDI_ICON1), IMAGE_ICON, 32, 32, LR_SHARED));
@@ -248,6 +263,24 @@ class CDialog : public ZDllVector
 		} while (i);
 
 		m_bAll = FALSE;
+
+		static PCWSTR Servers[] = {
+			L"nvidia", // https://driver-symbols.nvidia.com/
+			L"amd", // https://download.amd.com/dir/bin
+			L"intel", // https://software.intel.com/sites/downloads/symbols/
+			L"mozilla", // https://symbols.mozilla.org/
+			L"google", // https://chromium-browser-symsrv.commondatastorage.googleapis.com/
+			L"microsoft", // https://msdl.microsoft.com/download/symbols/
+		};
+
+		i = _countof(Servers);
+		HWND hwndCB = GetDlgItem(hwnd, IDC_COMBO2);
+		do 
+		{
+			--i;
+			ComboBox_SetItemData(hwndCB, i, ComboBox_AddString(hwndCB, Servers[i]));
+		} while (i);
+		ComboBox_SetCurSel(hwndCB, 0);
 
 		RECT rc, RC;
 		m_dx = 0;
@@ -370,8 +403,10 @@ class CDialog : public ZDllVector
 		EnableWindow(GetDlgItem(hwnd, IDOK), !bStart);
 		EnableWindow(GetDlgItem(hwnd, IDCANCEL), bStart);
 		EnableWindow(GetDlgItem(hwnd, IDC_EDIT2), !bStart);
-		EnableWindow(GetDlgItem(hwnd, IDC_CHECK1), !bStart);
-		EnableWindow(GetDlgItem(hwnd, IDC_CHECK2), !bStart);
+		EnableWindow(GetDlgItem(hwnd, IDC_CHECK1), !bStart && !GetServer());
+		EnableWindow(GetDlgItem(hwnd, IDC_COMBO1), !bStart && !GetServer());
+		EnableWindow(GetDlgItem(hwnd, IDC_BUTTON1), !bStart && !GetServer());
+		EnableWindow(GetDlgItem(hwnd, IDC_COMBO2), !bStart);
 		if (!m_bAll) EnableWindow(GetDlgItem(hwnd, IDC_EDIT1), !bStart);
 		m_DownloadActive = bStart;
 	}
@@ -409,15 +444,26 @@ class CDialog : public ZDllVector
 		{
 			PostMessage(m_arr[8].hwndProgress, PBM_SETPOS, ++m_nProcessed, GetDllCount());
 			WCHAR sz[32];
-			swprintf(sz, L"%u / %u", m_nProcessed, GetDllCount());
+			swprintf_s(sz, _countof(sz), L"%u / %u", m_nProcessed, GetDllCount());
 			SetWindowText(m_arr[8].hwndStatus, sz);
+		}
+	}
+
+	void ToggleSize(HWND hwnd)
+	{
+		if (m_dx = -m_dx)
+		{
+			RECT rc;
+			if (GetWindowRect(hwnd, &rc))
+			{
+				MoveWindow(hwnd, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top - m_dx, TRUE);
+			}
 		}
 	}
 
 	INT_PTR DlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	{
 		HWND hwndCtrl;
-		CDataPacket* packet;
 		DWORD len;
 		WCHAR sz[128];
 
@@ -435,7 +481,6 @@ class CDialog : public ZDllVector
 			break;
 
 		case e_packet:
-			packet = (CDataPacket*)lParam;
 			if (hwnd = CreateWindowExW(0, WC_EDIT, L"Fail", 
 				WS_OVERLAPPEDWINDOW|WS_VSCROLL|WS_HSCROLL|ES_MULTILINE|ES_AUTOHSCROLL|ES_AUTOVSCROLL, 
 				CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, 0, 0))
@@ -445,10 +490,13 @@ class CDialog : public ZDllVector
 					SendMessage(hwnd, WM_SETFONT, (WPARAM)m_hFont, 0);
 				}
 
-				SetWindowTextA(hwnd, packet->getData());
+				HLOCAL hMem = (HLOCAL)SendMessage(hwnd, EM_GETHANDLE, 0, 0);
+				SendMessage(hwnd, EM_SETHANDLE, lParam, 0);
+				lParam = (LPARAM)hMem;
+
 				ShowWindow(hwnd, SW_SHOW);
 			}
-			packet->Release();
+			LocalFree((PVOID)lParam);
 			break;
 
 		case e_List:
@@ -464,7 +512,7 @@ class CDialog : public ZDllVector
 					SetWindowText(m_arr[--n].hwndStatus, 0);
 					SetWindowText(m_arr[n].hwndName, 0);
 				} while (n);
-				swprintf(sz, L"%u / %u", 0, GetDllCount());
+				swprintf_s(sz, _countof(sz), L"%u / %u", 0, GetDllCount());
 				n = 8;//8
 				do 
 				{
@@ -508,7 +556,7 @@ class CDialog : public ZDllVector
 		case e_connect:
 			if ((NTSTATUS)lParam)
 			{
-				swprintf(sz, L"connect error %x", (ULONG)lParam);
+				swprintf_s(sz, _countof(sz), L"connect error %x", (ULONG)lParam);
 				SetWindowText(m_arr[wParam].hwndStatus, sz);
 				SetOverallProgress((NTSTATUS)lParam);
 				DoLog((UINT)wParam, "connect", (NTSTATUS)lParam);
@@ -516,13 +564,13 @@ class CDialog : public ZDllVector
 			break;
 
 		case e_send:
-			swprintf(sz, L"send error %x", (ULONG)lParam);
+			swprintf_s(sz, _countof(sz), L"send error %x", (ULONG)lParam);
 			SetWindowText(m_arr[wParam].hwndStatus, sz);
 			SetOverallProgress((NTSTATUS)lParam);
 			break;
 
 		case e_pdbcreate:
-			swprintf(sz, L"pdb create = %x", (ULONG)lParam);
+			swprintf_s(sz, _countof(sz), L"pdb create = %x", (ULONG)lParam);
 			SetWindowText(m_arr[wParam].hwndStatus, sz);
 			SetOverallProgress((NTSTATUS)lParam);
 			break;
@@ -547,25 +595,28 @@ class CDialog : public ZDllVector
 		case e_ip:
 			if ((ULONG)lParam)
 			{
-				set_ip((ULONG)lParam);
-				EnableWindow(GetDlgItem(hwnd, IDOK), TRUE);
-		case WM_DESTROY:
-				if (m_bTimerActive)
+				if (wParam == GetServer())
 				{
-					m_bTimerActive = FALSE;
-					KillTimer(hwnd, 1);
+					set_ip((ULONG)lParam);
+					EnableWindow(GetDlgItem(hwnd, IDOK), TRUE);
+		case WM_DESTROY:
+					if (m_bTimerActive)
+					{
+						m_bTimerActive = FALSE;
+						KillTimer(hwnd, TimerID);
+					}
 				}
 			}
 			break;
 
 		case e_recv:
-			swprintf(sz, L"downloading... %u", (ULONG)lParam);
+			swprintf_s(sz, _countof(sz), L"downloading... %u", (ULONG)lParam);
 			SetWindowText(m_arr[wParam].hwndStatus, sz);
 			PostMessage(m_arr[wParam].hwndProgress, PBM_SETPOS, -lParam, 0);
 			break;
 
 		case e_length:
-			swprintf(sz, L"downloading... %u", (ULONG)lParam);
+			swprintf_s(sz, _countof(sz), L"downloading... %u", (ULONG)lParam);
 			SetWindowText(m_arr[wParam].hwndStatus, sz);
 			PostMessage(m_arr[wParam].hwndProgress, PBM_SETRANGE32, -lParam, 0);
 			break;
@@ -600,8 +651,7 @@ class CDialog : public ZDllVector
 
 		case WM_INITDIALOG:
 			SetWindowLongPtr(hwnd, DWLP_USER, lParam);
-			((CDialog*)lParam)->OnInitDialog(hwnd);
-			break;
+			reinterpret_cast<CDialog*>(lParam)->OnInitDialog(hwnd);
 
 		case WM_COPYDATA:
 			if (reinterpret_cast<COPYDATASTRUCT*>(lParam)->dwData == CD_MAGIC)
@@ -645,20 +695,45 @@ class CDialog : public ZDllVector
 		case WM_COMMAND:
 			switch(wParam)
 			{
+			case MAKEWPARAM(IDC_COMBO2, CBN_SELCHANGE):
+				uMsg = ComboBox_GetCurSel((HWND)lParam);
+				if (uMsg < _countof(g_Servers))
+				{
+					if (GetServer() != uMsg)
+					{
+						EnableWindow(GetDlgItem(hwnd, IDC_CHECK1), !uMsg);
+						
+						if (uMsg)
+						{
+							if (m_bAll)
+							{
+								m_bAll = FALSE;
+								SendDlgItemMessageW(hwnd, IDC_CHECK1, BM_SETCHECK, BST_UNCHECKED, 0);
+								EnableWindow(GetDlgItem(hwnd, IDC_EDIT1), TRUE);
+								EnableWindow(GetDlgItem(hwnd, IDC_COMBO1), FALSE);
+								EnableWindow(GetDlgItem(hwnd, IDC_BUTTON1), FALSE);
+								ToggleSize(hwnd);
+							}
+						}
+
+						SetServer(uMsg);
+						EnableWindow(GetDlgItem(hwnd, IDOK), FALSE);
+						if (!m_bTimerActive)
+						{
+							ActivateTimer(hwnd);
+						}
+					}
+					SetFocus(GetDlgItem(hwnd, IDC_STATIC));
+				}
+				break;
+
 			case IDC_BUTTON1:
 				ComboBox_ResetContent(hwnd = GetDlgItem(hwnd, IDC_COMBO1));
 				FillCombo(hwnd);
 				break;
 
 			case MAKEWPARAM(IDC_CHECK1, BN_CLICKED):
-				if (m_dx = -m_dx)
-				{
-					RECT rc;
-					if (GetWindowRect(hwnd, &rc))
-					{
-						MoveWindow(hwnd, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top - m_dx, TRUE);
-					}
-				}
+				ToggleSize(hwnd);
 				EnableWindow(GetDlgItem(hwnd, IDC_EDIT1), m_bAll);
 
 				if (m_bAll = !m_bAll)
@@ -827,28 +902,26 @@ class CDialog : public ZDllVector
 			return ERROR_INVALID_PARAMETER;
 		}
 
-		int len = WideCharToMultiByte(CP_UTF8, 0, DllFileName, MAXDWORD, 0, 0, 0, 0);
+		ULONG len = 0;
+		PSTR PdbFileName = 0;
 
-		if (0 >= len)
+		while (len = WideCharToMultiByte(CP_UTF8, 0, DllFileName, MAXDWORD, PdbFileName, len, 0, 0))
 		{
-			return ERROR_INVALID_PARAMETER;
+			if (PdbFileName)
+			{
+				params->PdbFileName = PdbFileName;
+				return CreateSingleDownload(params);
+			}
+
+			PdbFileName = (PSTR)alloca(len);
 		}
 
-		params->PdbFileName = (PSTR)alloca(len + 1);
-
-		if (0 >= WideCharToMultiByte(CP_UTF8, 0, DllFileName, MAXDWORD, params->PdbFileName, len, 0, 0))
-		{
-			return ERROR_INVALID_PARAMETER;
-		}
-
-		return CreateSingleDownload(params);
+		return ERROR_INVALID_PARAMETER;
 	}
 
 public:
 	CDialog(SharedCred* Cred) : ZDllVector(Cred)
 	{
-		m_hRoot = 0, m_bDirChanged = TRUE, m_DownloadActive = FALSE, m_hFont = 0;
-		m_dwRef = 1;
 	}
 
 	~CDialog()
@@ -904,96 +977,6 @@ NTSTATUS AdjustPrivileges()
 	return status;
 }
 
-#undef DbgPrint
-
-class CReset : public CTcpEndpoint
-{
-	ULONG _n = 2;
-
-	virtual ~CReset()
-	{
-		DbgPrint("%s<%p>\n", __FUNCTION__, this);
-	}
-
-	virtual BOOL OnConnect(ULONG dwError)
-	{
-		DbgPrint("%s<%p>(%u)\n", __FUNCTION__, this, dwError);
-		return TRUE;
-	}
-
-	virtual void OnDisconnect()
-	{
-		DbgPrint("%s<%p>\n", __FUNCTION__, this);
-		if (--_n)
-		{
-			Connect(0xdbc54fcc, 0x5000);
-		}
-	}
-
-	virtual BOOL OnRecv(PSTR Buffer, ULONG cbTransferred)
-	{
-		DbgPrint("%s<%p>(%u)\n", __FUNCTION__, this, cbTransferred);
-		ULONG cb;
-		do 
-		{
-			cb = min(cbTransferred, 0x100);
-			DbgPrint("%.*s", cb, Buffer);
-
-		} while (Buffer += cb, cbTransferred -= cb);
-
-		return TRUE;
-	}
-
-	virtual ULONG GetConnectData(void** ppSendBuffer)
-	{
-		STATIC_ASTRING(get_SLC, "GET /download/symbols/SLC.pdb/2381BED24B44C275A716359F5CF286ED1/SLC.pdb HTTP/1.1\r\n"
-			"User-Agent: Microsoft-Symbol-Server/10.0.0.0\r\n"
-			"Host: msdl.microsoft.com\r\n"
-			"Connection: close\r\n"
-			"\r\n");
-		STATIC_ASTRING(get_comctl, "GET /download/symbols/comctl32.pdb/938014CE8049EFBEFA8894048D2B8C701/comctl32.pdb HTTP/1.1\r\n"
-			"User-Agent: Microsoft-Symbol-Server/10.0.0.0\r\n"
-			"Host: msdl.microsoft.com\r\n"
-			"Connection: close\r\n"
-			"\r\n");
-
-		switch (_n)
-		{
-		case 2:
-			*ppSendBuffer = (void*)get_SLC;
-			return sizeof(get_SLC) - 1;
-		case 1:
-			*ppSendBuffer = (void*)get_comctl;
-			return sizeof(get_comctl) - 1;
-		}
-		return 0;
-	}
-
-	virtual void LogError(DWORD opCode, DWORD dwError)
-	{
-		DbgPrint("%s<%p>(%.4s %x(%u))\n", __FUNCTION__, this, &opCode, RtlGetLastNtStatus(), dwError);
-	}
-public:
-	CReset()
-	{
-		DbgPrint("%s<%p>\n", __FUNCTION__, this);
-	}
-};
-
-void mpt()
-{
-	if (CReset* p = new CReset)
-	{
-		if (!p->Create(0x8000))
-		{
-			p->Connect(0xdbc54fcc, 0x5000);
-		}
-		p->Release();
-	}
-
-	MessageBoxW(0,0,0,0);
-}
-
 void InitWow64();
 
 void _ep()
@@ -1026,7 +1009,6 @@ void _ep()
 	WSADATA wd;
 	if (!WSAStartup(WINSOCK_VERSION, &wd))
 	{
-		//mpt();
 		if (SharedCred* Cred = new SharedCred)
 		{
 			if (0 <= Cred->Acquire(SECPKG_CRED_OUTBOUND, 0, SCH_CRED_NO_DEFAULT_CREDS|SCH_CRED_MANUAL_CRED_VALIDATION))
@@ -1050,6 +1032,7 @@ void IO_RUNDOWN::RundownCompleted()
 	ExitProcess(0);
 }
 
+//////////////////////////////////////////////////////////////////////////
 void ep(void*)
 {
 	initterm();

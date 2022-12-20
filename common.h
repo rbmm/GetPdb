@@ -16,3 +16,5 @@ struct EnumData
 	HWND hwnd;
 	ULONG_PTR dwProcessId;
 };
+
+#include "log.h"
