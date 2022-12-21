@@ -207,9 +207,21 @@ class CDialog : public ZDllVector
 
 	//---------------------------------------------------------
 
-	static INT_PTR CALLBACK _DlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+	static INT_PTR CALLBACK DlgProc_s(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	{
-		return ((CDialog*)GetWindowLongPtr(hwnd, DWLP_USER))->DlgProc(hwnd, uMsg, wParam, lParam);
+		return reinterpret_cast<CDialog*>(GetWindowLongPtr(hwnd, DWLP_USER))->DlgProc(hwnd, uMsg, wParam, lParam);
+	}
+
+	static INT_PTR CALLBACK StartDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+	{
+		if (uMsg == WM_INITDIALOG)
+		{
+			SetWindowLongPtr(hwnd, DWLP_USER, lParam);
+			SetWindowLongPtr(hwnd, DWLP_DLGPROC, (LONG_PTR)DlgProc_s);
+			return reinterpret_cast<CDialog*>(GetWindowLongPtr(hwnd, DWLP_USER))->DlgProc(hwnd, uMsg, wParam, lParam);
+		}
+
+		return 0;
 	}
 	
 	void OnTimer(HWND hwnd)
@@ -237,19 +249,24 @@ class CDialog : public ZDllVector
 		ActivateTimer(hwnd);
 
 		SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)LoadImage((HINSTANCE)&__ImageBase, 
-			MAKEINTRESOURCE(IDI_ICON1), IMAGE_ICON, 32, 32, LR_SHARED));
+			MAKEINTRESOURCE(IDI_ICON1), IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_SHARED));
 
 		SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)LoadImage((HINSTANCE)&__ImageBase, 
-			MAKEINTRESOURCE(IDI_ICON1), IMAGE_ICON, 16, 16, LR_SHARED));
+			MAKEINTRESOURCE(IDI_ICON1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
 		
-		PCWSTR systemroot = USER_SHARED_DATA->NtSystemRoot;
-		PWSTR path = (PWSTR)alloca((wcslen(systemroot) + 16)<< 1);
-		PWSTR c = xwcscpy(path, systemroot);
+		WCHAR buf[MAX_PATH];
 
-		wcscpy(c, L"\\system32\\");
-		SetDlgItemText(hwnd, IDC_EDIT1, path);
-		wcscpy(c, L"\\symbols\\");
-		SetDlgItemText(hwnd, IDC_EDIT2, path);
+		if (ULONG cch = GetWindowsDirectory(buf, _countof(buf)))
+		{
+			if (!wcscpy_s(buf + cch, _countof(buf) - cch, L"\\symbols\\"))
+			{
+				SetDlgItemTextW(hwnd, IDC_EDIT2, buf);
+			}
+			if (!wcscpy_s(buf + cch, _countof(buf) - cch, L"\\system32\\"))
+			{
+				SetDlgItemTextW(hwnd, IDC_EDIT1, buf);
+			}
+		}
 
 		int i = 9;
 
@@ -650,8 +667,8 @@ class CDialog : public ZDllVector
 			break;
 
 		case WM_INITDIALOG:
-			SetWindowLongPtr(hwnd, DWLP_USER, lParam);
-			reinterpret_cast<CDialog*>(lParam)->OnInitDialog(hwnd);
+			OnInitDialog(hwnd);
+			return 0;
 
 		case WM_COPYDATA:
 			if (reinterpret_cast<COPYDATASTRUCT*>(lParam)->dwData == CD_MAGIC)
@@ -943,7 +960,7 @@ public:
 
 	void Run()
 	{
-		DialogBoxParam((HINSTANCE)&__ImageBase, MAKEINTRESOURCE(IDD_GETPDB_DIALOG), HWND_DESKTOP, _DlgProc, (LPARAM)this);
+		DialogBoxParam((HINSTANCE)&__ImageBase, MAKEINTRESOURCE(IDD_GETPDB_DIALOG), HWND_DESKTOP, StartDlgProc, (LPARAM)this);
 	}
 
 	virtual void AddRef()
