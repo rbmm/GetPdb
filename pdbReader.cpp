@@ -267,7 +267,7 @@ NTSTATUS MapFileRO(POBJECT_ATTRIBUTES poa, void** BaseAddress, PSIZE_T ViewSize)
 	HANDLE hFile, hSection;
 	IO_STATUS_BLOCK iosb;
 
-	NTSTATUS status = NtOpenFile(&hFile, FILE_GENERIC_READ, poa, &iosb, FILE_SHARE_READ, FILE_SYNCHRONOUS_IO_NONALERT);
+	NTSTATUS status = NtOpenFile(&hFile, FILE_GENERIC_READ, poa, &iosb, FILE_SHARE_READ, FILE_SYNCHRONOUS_IO_NONALERT|FILE_NON_DIRECTORY_FILE);
 
 	if (0 <= status)
 	{
