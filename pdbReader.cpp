@@ -267,19 +267,19 @@ NTSTATUS MapFileRO(POBJECT_ATTRIBUTES poa, void** BaseAddress, PSIZE_T ViewSize)
 	HANDLE hFile, hSection;
 	IO_STATUS_BLOCK iosb;
 
-	NTSTATUS status = ZwOpenFile(&hFile, FILE_GENERIC_READ, poa, &iosb, FILE_SHARE_READ, FILE_SYNCHRONOUS_IO_NONALERT);
+	NTSTATUS status = NtOpenFile(&hFile, FILE_GENERIC_READ, poa, &iosb, FILE_SHARE_READ, FILE_SYNCHRONOUS_IO_NONALERT);
 
 	if (0 <= status)
 	{
-		status = ZwCreateSection(&hSection, SECTION_MAP_READ, 0, 0, PAGE_READONLY, SEC_COMMIT, hFile);
+		status = NtCreateSection(&hSection, SECTION_MAP_READ, 0, 0, PAGE_READONLY, SEC_COMMIT, hFile);
 
-		ZwClose(hFile);
+		NtClose(hFile);
 
 		if (0 <= status)
 		{
 			status = ZwMapViewOfSection(hSection, NtCurrentProcess(), BaseAddress, 0, 0, 0, ViewSize, ViewUnmap, 0, PAGE_READONLY);
 
-			ZwClose(hSection);
+			NtClose(hSection);
 		}
 	}
 
