@@ -14,7 +14,9 @@
 #include <MSWSock.h>
 #include <commctrl.h>
 #include <WinInet.h>
-
+#include <shobjidl.h>
+#include <shobjidl_core.h>
+#include <shlobj_core.h>
 _NT_BEGIN
 #include <tdi.h>
 #include <schannel.h>

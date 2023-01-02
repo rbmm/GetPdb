@@ -15,3 +15,4 @@ LANGUAGE 0, 0
 // Icon with lowest ID value placed first to ensure application icon
 // remains consistent on all systems.
 IDI_ICON1               ICON                    "Download.ico"
+IDI_ICON2               ICON                    "Icon_7.ico"

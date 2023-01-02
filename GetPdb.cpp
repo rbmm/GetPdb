@@ -26,6 +26,60 @@ HANDLE g_hDrv;
 #define FormatWin32Status(err, status) FormatStatus(err, kernel32.dll, status)
 #define FormatNTStatus(err, status) FormatStatus(err, ntdll.dll, status)
 
+void OnBrowse(_In_ HWND hwndDlg, 
+			  _In_ UINT nIDDlgItem, 
+			  _In_ UINT cFileTypes, 
+			  _In_ const COMDLG_FILTERSPEC *rgFilterSpec, 
+			  _In_ UINT iFileType = 0)
+{
+	IFileDialog *pFileOpen;
+
+	if (0 <= CoCreateInstance(__uuidof(FileOpenDialog), NULL, CLSCTX_ALL, IID_PPV_ARGS(&pFileOpen)))
+	{
+		pFileOpen->SetOptions(FOS_NOVALIDATE|FOS_NOTESTFILECREATE|
+			FOS_NODEREFERENCELINKS|FOS_DONTADDTORECENT|FOS_FORCESHOWHIDDEN);
+
+		if (0 <= pFileOpen->SetFileTypes(cFileTypes, rgFilterSpec) && 
+			0 <= pFileOpen->SetFileTypeIndex(1 + iFileType) && 
+			0 <= pFileOpen->Show(hwndDlg))
+		{
+			IShellItem *pItem;
+
+			if (0 <= pFileOpen->GetResult(&pItem))
+			{
+				PWSTR pszFilePath;
+				if (0 <= pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszFilePath))
+				{
+					SetDlgItemTextW(hwndDlg, nIDDlgItem, pszFilePath);
+					CoTaskMemFree(pszFilePath);
+				}
+				pItem->Release();
+			}
+		}
+
+		pFileOpen->Release();
+	}
+}
+
+void OnBrowse(_In_ HWND hwndDlg, _In_ UINT nIDDlgItem, _In_ PCWSTR lpszTitle)
+{
+	WCHAR buf[MAX_PATH];
+
+	BROWSEINFO bi = { 
+		0, 0, 0, lpszTitle, BIF_DONTGOBELOWDOMAIN|BIF_NEWDIALOGSTYLE|BIF_RETURNONLYFSDIRS
+	};
+
+	if (PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi))
+	{
+		if (SHGetPathFromIDListEx(pidl, buf, _countof(buf), GPFIDL_DEFAULT))
+		{
+			SetDlgItemTextW(hwndDlg, nIDDlgItem, buf);
+		}
+
+		CoTaskMemFree(pidl);
+	}
+}
+
 LPWSTR xwcscpy(LPWSTR dst, LPCWSTR src)
 {
 	WCHAR c;
@@ -324,6 +378,13 @@ class CDialog : public ZDllVector
 				SendDlgItemMessageW(hwnd, IDC_COMBO1, WM_SETFONT, (WPARAM)hFont, 0);
 			}
 		}
+
+		if (HANDLE hi = LoadImage((HINSTANCE)&__ImageBase, 
+			MAKEINTRESOURCE(IDI_ICON2), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED))
+		{
+			SendDlgItemMessageW(hwnd, IDC_BUTTON2, BM_SETIMAGE, IMAGE_ICON, (LPARAM)hi);
+			SendDlgItemMessageW(hwnd, IDC_BUTTON3, BM_SETIMAGE, IMAGE_ICON, (LPARAM)hi);
+		}
 	}
 
 	void toCtrl(HWND hwndCtrl)
@@ -420,11 +481,16 @@ class CDialog : public ZDllVector
 		EnableWindow(GetDlgItem(hwnd, IDOK), !bStart);
 		EnableWindow(GetDlgItem(hwnd, IDCANCEL), bStart);
 		EnableWindow(GetDlgItem(hwnd, IDC_EDIT2), !bStart);
+		EnableWindow(GetDlgItem(hwnd, IDC_BUTTON3), !bStart);
 		EnableWindow(GetDlgItem(hwnd, IDC_CHECK1), !bStart && !GetServer());
 		EnableWindow(GetDlgItem(hwnd, IDC_COMBO1), !bStart && !GetServer());
 		EnableWindow(GetDlgItem(hwnd, IDC_BUTTON1), !bStart && !GetServer());
 		EnableWindow(GetDlgItem(hwnd, IDC_COMBO2), !bStart);
-		if (!m_bAll) EnableWindow(GetDlgItem(hwnd, IDC_EDIT1), !bStart);
+		if (!m_bAll) 
+		{
+			EnableWindow(GetDlgItem(hwnd, IDC_EDIT1), !bStart);
+			EnableWindow(GetDlgItem(hwnd, IDC_BUTTON2), !bStart);
+		}
 		m_DownloadActive = bStart;
 	}
 
@@ -480,6 +546,14 @@ class CDialog : public ZDllVector
 
 	INT_PTR DlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	{
+		static const COMDLG_FILTERSPEC rgSpec[] =
+		{ 
+			{ L"Dll files", L"*.dll" },
+			{ L"Exe files", L"*.exe" },
+			{ L"Sys files", L"*.sys" },
+			{ L"All files", L"*" },
+		};
+
 		HWND hwndCtrl;
 		DWORD len;
 		WCHAR sz[128];
@@ -727,6 +801,7 @@ class CDialog : public ZDllVector
 								m_bAll = FALSE;
 								SendDlgItemMessageW(hwnd, IDC_CHECK1, BM_SETCHECK, BST_UNCHECKED, 0);
 								EnableWindow(GetDlgItem(hwnd, IDC_EDIT1), TRUE);
+								EnableWindow(GetDlgItem(hwnd, IDC_BUTTON2), TRUE);
 								EnableWindow(GetDlgItem(hwnd, IDC_COMBO1), FALSE);
 								EnableWindow(GetDlgItem(hwnd, IDC_BUTTON1), FALSE);
 								ToggleSize(hwnd);
@@ -744,6 +819,13 @@ class CDialog : public ZDllVector
 				}
 				break;
 
+			case IDC_BUTTON2:
+				OnBrowse(hwnd, IDC_EDIT1, _countof(rgSpec), rgSpec);
+				break;
+			case IDC_BUTTON3:
+				OnBrowse(hwnd, IDC_EDIT2, L"Save PDB in this directory:");
+				break;
+
 			case IDC_BUTTON1:
 				ComboBox_ResetContent(hwnd = GetDlgItem(hwnd, IDC_COMBO1));
 				FillCombo(hwnd);
@@ -752,6 +834,7 @@ class CDialog : public ZDllVector
 			case MAKEWPARAM(IDC_CHECK1, BN_CLICKED):
 				ToggleSize(hwnd);
 				EnableWindow(GetDlgItem(hwnd, IDC_EDIT1), m_bAll);
+				EnableWindow(GetDlgItem(hwnd, IDC_BUTTON2), m_bAll);
 
 				if (m_bAll = !m_bAll)
 				{
@@ -1023,23 +1106,27 @@ void _ep()
 		break;
 	}
 
-	WSADATA wd;
-	if (!WSAStartup(WINSOCK_VERSION, &wd))
+	if (0 <= CoInitializeEx(0, COINIT_APARTMENTTHREADED|COINIT_DISABLE_OLE1DDE))
 	{
-		if (SharedCred* Cred = new SharedCred)
+		WSADATA wd;
+		if (!WSAStartup(WINSOCK_VERSION, &wd))
 		{
-			if (0 <= Cred->Acquire(SECPKG_CRED_OUTBOUND, 0, SCH_CRED_NO_DEFAULT_CREDS|SCH_CRED_MANUAL_CRED_VALIDATION))
+			if (SharedCred* Cred = new SharedCred)
 			{
-				if (CDialog* dlg = new CDialog(Cred))
+				if (0 <= Cred->Acquire(SECPKG_CRED_OUTBOUND, 0, SCH_CRED_NO_DEFAULT_CREDS|SCH_CRED_MANUAL_CRED_VALIDATION))
 				{
-					dlg->Run();
-					dlg->Release();
+					if (CDialog* dlg = new CDialog(Cred))
+					{
+						dlg->Run();
+						dlg->Release();
+					}
 				}
+				Cred->Release();
 			}
-			Cred->Release();
-		}
 
-		WSACleanup();
+			WSACleanup();
+		}
+		CoUninitialize();
 	}
 }
 
