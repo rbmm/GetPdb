@@ -352,7 +352,7 @@ public:
 					UnlockHandle();
 				}
 
-				irp->CheckNtStatus(status);
+				irp->CheckNtStatus(this, status);
 
 				return true;
 			}
@@ -387,7 +387,7 @@ public:
 		_ByteOffset.QuadPart = 0;
 		_EndOfFile.QuadPart = EndOfFile->QuadPart;
 
-		if (0 <= (status = NT_IRP::RtlBindIoCompletion(hFile)))
+		if (0 <= (status = NT_IRP::BindIoCompletion(this, hFile)))
 		{
 			static USHORT cmp = COMPRESSION_FORMAT_NONE;
 
@@ -397,7 +397,7 @@ public:
 
 				dbgp_0("%x>SET_COMPRESSION>%x %x %p\n", GetCurrentThreadId(), status, irp->Status, irp->Information);
 
-				irp->CheckNtStatus(status);
+				irp->CheckNtStatus(this, status);
 			}
 		}
 
